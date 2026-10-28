@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>完美的一天</title>
+<meta name="description" content="每天五项，每项至少 5 分钟，做了就是完美的一天。">
+<meta name="theme-color" content="#2f5d50">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="完美的一天">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header class="header">
+    <h1>完美的一天</h1>
+    <p id="todayLabel" class="date-label"></p>
+  </header>
+
+  <section class="hero" aria-label="连续打卡">
+    <div class="streak-big"><span id="streakNum">0</span><span class="streak-unit">天</span></div>
+    <p class="streak-label">当前连续完美天数</p>
+    <div class="stats">
+      <div class="stat"><span id="statTotal" class="stat-num">0</span><span class="stat-name">累计完美</span></div>
+      <div class="stat"><span id="statLongest" class="stat-num">0</span><span class="stat-name">最长连续</span></div>
+      <div class="stat"><span id="statMonth" class="stat-num">0</span><span class="stat-name">本月完美</span></div>
+    </div>
+  </section>
+
+  <section class="card" id="todayCard" aria-label="今日打卡">
+    <div class="today-head">
+      <h2>今天 · <span id="doneCount">0</span>/<span id="todayTotal">5</span></h2>
+      <span id="todayPct">0%</span>
+    </div>
+    <div class="progress" role="progressbar" aria-label="今日完成度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div id="perfectBanner" class="perfect-banner" hidden>今天完整了 · 完美的一天</div>
+    <p id="freshStartLine" class="fresh-start" hidden>今天做满就是新链子的第一天</p>
+    <div id="focusHint" class="focus-hint" hidden></div>
+    <ul id="itemList" class="item-list"></ul>
+  </section>
+
+  <section class="card" aria-label="过去 12 周">
+    <h2>过去 12 周</h2>
+    <p class="section-hint">金色 = 完美的一天。点任意一天查看或补打卡。</p>
+    <div id="historyGrid" class="history-grid"></div>
+    <div id="dayDetail" class="day-detail" hidden></div>
+  </section>
+
+  <section class="card" aria-label="管理项目">
+    <h2>管理项目</h2>
+    <p class="section-hint">名字、每天的目标分钟数、顺序、增删都可以改。</p>
+    <ul id="manageList" class="manage-list"></ul>
+    <div class="add-row">
+      <input id="newName" type="text" placeholder="新项目名字" maxlength="12">
+      <input id="newMinutes" type="number" min="1" max="120" value="5" aria-label="目标分钟数">
+      <span class="min-label">分钟</span>
+      <button id="addBtn" type="button">添加</button>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>数据只存在这台手机里，不上传、不需要账号。</p>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
