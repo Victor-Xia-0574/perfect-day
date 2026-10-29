@@ -1,6 +1,6 @@
 // 离线缓存：首次打开后联网缓存全部文件，之后无网也能打开打卡。
 // 改版时改一下 CACHE_NAME，前端会重新缓存新版。
-var CACHE_NAME = 'perfect-day-v2';
+var CACHE_NAME = 'perfect-day-v3';
 var ASSETS = [
   './',
   './index.html',
