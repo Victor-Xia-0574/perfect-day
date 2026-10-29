@@ -1,5 +1,7 @@
 // 完美的一天打卡 — 纯前端，数据只存在本机 localStorage。
 // 设计要点（用户定稿）：计时跑满自动打勾，不设手动“完成”按钮；
+// 跑满后自动转正计时（继续显示总专注时长，点“结束”才停）；
+// 顶部的“今日一句话”按日期存，每天一张白纸；
 // 断链不惩罚，只显示一句中性提示；每天的完成度用进度条直观展示。
 (function () {
   'use strict';
@@ -82,12 +84,12 @@
 
   // ---------- 状态 ----------
   var state = null;
-  var activeTimer = null; // { itemId, remaining, intervalId }
+  var activeTimer = null; // { itemId, target, elapsed, overtime, intervalId }
   var editingNoteId = null;
   var selectedDay = null;
 
   function defaultState() {
-    return { items: JSON.parse(JSON.stringify(DEFAULT_ITEMS)), days: {} };
+    return { items: JSON.parse(JSON.stringify(DEFAULT_ITEMS)), days: {}, encouragement: {} };
   }
   function load() {
     try {
@@ -95,6 +97,7 @@
       if (!raw) return defaultState();
       var s = JSON.parse(raw);
       if (!s || !Array.isArray(s.items) || !s.days) return defaultState();
+      if (!s.encouragement) s.encouragement = {};
       return s;
     } catch (e) { return defaultState(); }
   }
@@ -108,6 +111,7 @@
     var rec = state.days[key];
     if (!Array.isArray(rec.done)) rec.done = [];
     if (!rec.notes) rec.notes = {};
+    if (!rec.sessions) rec.sessions = [];
     return rec;
   }
   function todayDoneIds() {
@@ -126,20 +130,31 @@
   }
 
   // ---------- 计时 ----------
+  // 倒计时跑满：自动打勾（规则不变），然后转正计时，显示总专注时长，
+  // 点“结束”才停；正计时只在界面显示，不存档。
   function startFocus(itemId) {
     if (activeTimer) stopTimer(false);
     var item = state.items.filter(function (it) { return it.id === itemId; })[0];
     if (!item) return;
-    activeTimer = { itemId: itemId, remaining: item.minutes * 60, intervalId: null };
+    activeTimer = { itemId: itemId, target: item.minutes * 60, elapsed: 0, overtime: false, intervalId: null };
     activeTimer.intervalId = setInterval(function () {
-      activeTimer.remaining--;
-      var el = document.getElementById('timer-' + itemId);
-      if (el) el.textContent = fmtTime(activeTimer.remaining);
-      if (activeTimer.remaining <= 0) {
-        stopTimer(false);
+      activeTimer.elapsed++;
+      if (!activeTimer.overtime && activeTimer.elapsed >= activeTimer.target) {
+        activeTimer.overtime = true;
         setDone(todayKey(), itemId, true); // 计时跑满，自动打勾
-        activeTimer = null;
-        renderAll();
+        // 跑满即记一次专注；之后正计时结束时再把时长补成总时长
+        var rec = ensureDay(todayKey());
+        if (!rec.sessions) rec.sessions = [];
+        rec.sessions.push({ itemId: itemId, seconds: activeTimer.target, at: Date.now() });
+        activeTimer.sessionIndex = rec.sessions.length - 1;
+        save();
+        renderAll(); // 切到已打卡行，开始正计时
+      }
+      var el = document.getElementById('timer-' + itemId);
+      if (el) {
+        el.textContent = activeTimer.overtime
+          ? '已专注 ' + fmtTime(activeTimer.elapsed)
+          : fmtTime(activeTimer.target - activeTimer.elapsed);
       }
     }, 1000);
     renderAll();
@@ -148,6 +163,29 @@
     if (activeTimer && activeTimer.intervalId) clearInterval(activeTimer.intervalId);
     activeTimer = null;
     if (rerender) renderAll();
+  }
+  // 正计时结束：把本次总时长写进该条专注记录，然后停表
+  function endFocus() {
+    if (activeTimer && activeTimer.overtime && activeTimer.sessionIndex != null) {
+      var rec = ensureDay(todayKey());
+      if (rec.sessions && rec.sessions[activeTimer.sessionIndex]) {
+        rec.sessions[activeTimer.sessionIndex].seconds = activeTimer.elapsed;
+        save();
+      }
+    }
+    stopTimer(true);
+  }
+  // 撤销时若该项正在正计时，丢弃本次未结束的记录
+  function discardActiveSession(itemId) {
+    if (activeTimer && activeTimer.itemId === itemId && activeTimer.sessionIndex != null) {
+      var rec = ensureDay(todayKey());
+      if (rec.sessions && rec.sessions[activeTimer.sessionIndex] &&
+          rec.sessions[activeTimer.sessionIndex].itemId === itemId) {
+        rec.sessions.splice(activeTimer.sessionIndex, 1);
+        save();
+      }
+    }
+    stopTimer(false);
   }
   function fmtTime(sec) {
     var m = Math.floor(sec / 60), s = sec % 60;
@@ -211,24 +249,43 @@
 
       var actions = document.createElement('div');
       actions.className = 'item-actions';
-      if (isDone) {
-        var mark = document.createElement('span');
-        mark.className = 'done-mark';
-        mark.textContent = '✓ 已打卡';
-        actions.appendChild(mark);
-        var undo = document.createElement('button');
-        undo.type = 'button'; undo.className = 'ghost'; undo.textContent = '撤销';
-        undo.onclick = function () { setDone(today, item.id, false); renderAll(); };
-        actions.appendChild(undo);
-      } else if (isTiming) {
+      if (isTiming && !activeTimer.overtime) {
         var timer = document.createElement('span');
         timer.className = 'timer'; timer.id = 'timer-' + item.id;
-        timer.textContent = fmtTime(activeTimer.remaining);
+        timer.textContent = fmtTime(activeTimer.target - activeTimer.elapsed);
         actions.appendChild(timer);
         var cancel = document.createElement('button');
         cancel.type = 'button'; cancel.className = 'secondary'; cancel.textContent = '取消计时';
         cancel.onclick = function () { stopTimer(true); };
         actions.appendChild(cancel);
+      } else if (isDone) {
+        var mark = document.createElement('span');
+        mark.className = 'done-mark';
+        mark.textContent = '✓ 已打卡';
+        actions.appendChild(mark);
+        if (activeTimer && activeTimer.overtime && activeTimer.itemId === item.id) {
+          var over = document.createElement('span');
+          over.className = 'timer'; over.id = 'timer-' + item.id;
+          over.textContent = '已专注 ' + fmtTime(activeTimer.elapsed);
+          actions.appendChild(over);
+          var end = document.createElement('button');
+          end.type = 'button'; end.textContent = '结束';
+          end.onclick = function () { endFocus(); };
+          actions.appendChild(end);
+        } else {
+          var again = document.createElement('button');
+          again.type = 'button'; again.className = 'secondary'; again.textContent = '再专注一次';
+          again.disabled = !!activeTimer;
+          again.onclick = function () { startFocus(item.id); };
+          actions.appendChild(again);
+        }
+        var undo = document.createElement('button');
+        undo.type = 'button'; undo.className = 'ghost'; undo.textContent = '撤销';
+        undo.onclick = function () {
+          if (activeTimer && activeTimer.itemId === item.id) discardActiveSession(item.id);
+          setDone(today, item.id, false); renderAll();
+        };
+        actions.appendChild(undo);
       } else {
         var start = document.createElement('button');
         start.type = 'button'; start.textContent = '开始专注';
@@ -249,6 +306,16 @@
       };
       actions.appendChild(noteBtn);
       li.appendChild(actions);
+
+      // 今日专注统计：跑满的次数 + 合计分钟（只算跑满的，取消的不算）
+      var todaySessions = (rec && rec.sessions ? rec.sessions : []).filter(function (s) { return s.itemId === item.id; });
+      if (todaySessions.length) {
+        var totalSec = todaySessions.reduce(function (a, s) { return a + (s.seconds || 0); }, 0);
+        var sum = document.createElement('div');
+        sum.className = 'focus-sum';
+        sum.textContent = '今日专注 ' + todaySessions.length + ' 次 · 合计 ' + Math.round(totalSec / 60) + ' 分钟';
+        li.appendChild(sum);
+      }
 
       if (editingNoteId === item.id) {
         var area = document.createElement('div');
@@ -281,7 +348,7 @@
     var hint = el('focusHint');
     if (activeTimer) {
       var cur = state.items.filter(function (it) { return it.id === activeTimer.itemId; })[0];
-      hint.textContent = cur ? ('正在专注：' + cur.name) : '';
+      hint.textContent = cur ? ((activeTimer.overtime ? '已达标，继续专注：' : '正在专注：') + cur.name) : '';
       hint.hidden = false;
     } else {
       hint.hidden = true;
@@ -418,6 +485,77 @@
     });
   }
 
+  // ---------- 今日一句话（按日期存，每天一张白纸） ----------
+  function renderEncourage() {
+    var input = el('encourageInput');
+    if (!input) return;
+    if (!state.encouragement) state.encouragement = {};
+    input.value = state.encouragement[todayKey()] || '';
+  }
+
+  // ---------- 专注数据导出（复制成文字，发给小X分析） ----------
+  function fmtClock(ts) {
+    var d = new Date(ts);
+    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function buildFocusExport() {
+    var lines = ['完美的一天 · 专注记录（发给小X分析）'];
+    var keys = Object.keys(state.days).sort();
+    var any = false;
+    keys.forEach(function (key) {
+      var rec = state.days[key];
+      if (!rec || !rec.sessions || !rec.sessions.length) return;
+      var byItem = {};
+      rec.sessions.forEach(function (s) {
+        if (!state.items.some(function (it) { return it.id === s.itemId; })) return;
+        if (!byItem[s.itemId]) byItem[s.itemId] = [];
+        byItem[s.itemId].push(s);
+      });
+      var itemLines = [];
+      state.items.forEach(function (item) {
+        var ss = byItem[item.id];
+        if (!ss || !ss.length) return;
+        var total = ss.reduce(function (a, s) { return a + (s.seconds || 0); }, 0);
+        var detail = ss.map(function (s) { return fmtClock(s.at) + ' ' + Math.round((s.seconds || 0) / 60) + '分钟'; }).join('；');
+        itemLines.push('  ' + item.name + '：' + ss.length + '次，合计' + Math.round(total / 60) + '分钟（' + detail + '）');
+      });
+      if (!itemLines.length) return;
+      any = true;
+      lines.push(key + '：');
+      lines = lines.concat(itemLines);
+    });
+    if (!any) return '';
+    return lines.join('\n');
+  }
+  function copyFocusData() {
+    var text = buildFocusExport();
+    var hint = el('copyFocusHint');
+    function show(msg) {
+      if (!hint) return;
+      hint.textContent = msg;
+      hint.hidden = false;
+      setTimeout(function () { hint.hidden = true; }, 2500);
+    }
+    if (!text) { show('还没有专注记录，先专注一次吧'); return; }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      show('✓ 已复制，发给小X就能分析');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        show('✓ 已复制，发给小X就能分析');
+      }).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
   function renderAll() {
     renderHero();
     renderToday();
@@ -443,6 +581,26 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(function () {});
     }
+    renderEncourage();
+    var encInput = el('encourageInput');
+    var encSaved = el('encourageSaved');
+    var encTimer = null;
+    if (encInput) {
+      encInput.onchange = function () {
+        if (!state.encouragement) state.encouragement = {};
+        var v = encInput.value.trim();
+        if (v) state.encouragement[todayKey()] = v;
+        else delete state.encouragement[todayKey()];
+        save();
+        if (encSaved) {
+          encSaved.hidden = false;
+          if (encTimer) clearTimeout(encTimer);
+          encTimer = setTimeout(function () { encSaved.hidden = true; }, 1500);
+        }
+      };
+    }
+    var copyBtn = el('copyFocusBtn');
+    if (copyBtn) copyBtn.onclick = copyFocusData;
     renderAll();
   }
 

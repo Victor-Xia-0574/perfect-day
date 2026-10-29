@@ -179,4 +179,16 @@ button.danger { background: transparent; color: var(--danger); padding: 9px 6px;
   color: var(--text);
 }
 .min-label { font-size: 13px; color: var(--muted); }
+.encourage input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+}
+.saved-hint { color: var(--green); font-size: 13px; margin-left: 8px; font-weight: 600; }
+.focus-sum { margin-top: 8px; font-size: 13px; color: var(--muted); }
 .footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 20px; }

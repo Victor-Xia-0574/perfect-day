@@ -21,6 +21,13 @@
     <p id="todayLabel" class="date-label"></p>
   </header>
 
+  <section class="card encourage" aria-label="今日一句话">
+    <h2>今日一句话</h2>
+    <p class="section-hint">上班第一件事：写一句话，激励今天的自己。</p>
+    <input id="encourageInput" type="text" placeholder="写一句话，激励今天的自己" maxlength="60">
+    <span id="encourageSaved" class="saved-hint" hidden>✓ 已保存</span>
+  </section>
+
   <section class="hero" aria-label="连续打卡">
     <div class="streak-big"><span id="streakNum">0</span><span class="streak-unit">天</span></div>
     <p class="streak-label">当前连续完美天数</p>
@@ -62,6 +69,13 @@
       <span class="min-label">分钟</span>
       <button id="addBtn" type="button">添加</button>
     </div>
+  </section>
+
+  <section class="card" aria-label="专注数据">
+    <h2>专注数据</h2>
+    <p class="section-hint">每次跑满的专注都会记下来：今天专注几次、合计多久。复制后发给小X，就能帮你分析工作状态、优化后面的节奏。</p>
+    <button id="copyFocusBtn" type="button">复制专注数据</button>
+    <span id="copyFocusHint" class="saved-hint" hidden></span>
   </section>
 
   <footer class="footer">
