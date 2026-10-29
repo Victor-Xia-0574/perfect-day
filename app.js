@@ -132,54 +132,105 @@
   // ---------- 计时 ----------
   // 倒计时跑满：自动打勾（规则不变），然后转正计时，显示总专注时长，
   // 点“结束”才停；正计时只在界面显示，不存档。
+  // 熄屏修复（2026-10-29 bug）：不再靠 setInterval 每秒 +1 累加——iOS 熄屏/切后台
+  // 会冻结 JS 计时，导致 5 分钟永远跑不满。改按开始时刻的墙钟算 elapsed，
+  // 熄屏多久都照算；进行中的专注同时存进 localStorage，页面被系统回收重进也能恢复。
+  function timerElapsed() {
+    if (!activeTimer) return 0;
+    return Math.max(0, Math.floor((Date.now() - activeTimer.startedAt) / 1000));
+  }
+  function persistFocus() {
+    if (!state) return;
+    if (activeTimer) {
+      state.activeFocus = {
+        itemId: activeTimer.itemId,
+        startedAt: activeTimer.startedAt,
+        target: activeTimer.target,
+        overtime: activeTimer.overtime,
+        sessionIndex: activeTimer.sessionIndex != null ? activeTimer.sessionIndex : null,
+        sessionDay: activeTimer.sessionDay || null
+      };
+    } else {
+      delete state.activeFocus;
+    }
+    save();
+  }
+  function completeFocus() {
+    var itemId = activeTimer.itemId;
+    activeTimer.overtime = true;
+    setDone(todayKey(), itemId, true); // 计时跑满，自动打勾
+    // 跑满即记一次专注；之后正计时结束时再把时长补成总时长。
+    // at 用跑满的那一刻（开始时刻 + 目标时长），不是亮屏恢复的那一刻。
+    var rec = ensureDay(todayKey());
+    if (!rec.sessions) rec.sessions = [];
+    rec.sessions.push({ itemId: itemId, seconds: activeTimer.target, at: activeTimer.startedAt + activeTimer.target * 1000 });
+    activeTimer.sessionIndex = rec.sessions.length - 1;
+    activeTimer.sessionDay = todayKey(); // 结束/撤销时按这天找记录，避免跨午夜写到别人头上
+    persistFocus();
+    renderAll(); // 切到已打卡行，开始正计时
+  }
+  function tick() {
+    if (!activeTimer) return;
+    var elapsed = timerElapsed();
+    if (!activeTimer.overtime && elapsed >= activeTimer.target) {
+      completeFocus();
+      elapsed = timerElapsed();
+    }
+    var el = document.getElementById('timer-' + activeTimer.itemId);
+    if (el) {
+      el.textContent = activeTimer.overtime
+        ? '已专注 ' + fmtTime(elapsed)
+        : fmtTime(Math.max(0, activeTimer.target - elapsed));
+    }
+  }
   function startFocus(itemId) {
     if (activeTimer) stopTimer(false);
     var item = state.items.filter(function (it) { return it.id === itemId; })[0];
     if (!item) return;
-    activeTimer = { itemId: itemId, target: item.minutes * 60, elapsed: 0, overtime: false, intervalId: null };
-    activeTimer.intervalId = setInterval(function () {
-      activeTimer.elapsed++;
-      if (!activeTimer.overtime && activeTimer.elapsed >= activeTimer.target) {
-        activeTimer.overtime = true;
-        setDone(todayKey(), itemId, true); // 计时跑满，自动打勾
-        // 跑满即记一次专注；之后正计时结束时再把时长补成总时长
-        var rec = ensureDay(todayKey());
-        if (!rec.sessions) rec.sessions = [];
-        rec.sessions.push({ itemId: itemId, seconds: activeTimer.target, at: Date.now() });
-        activeTimer.sessionIndex = rec.sessions.length - 1;
-        save();
-        renderAll(); // 切到已打卡行，开始正计时
-      }
-      var el = document.getElementById('timer-' + itemId);
-      if (el) {
-        el.textContent = activeTimer.overtime
-          ? '已专注 ' + fmtTime(activeTimer.elapsed)
-          : fmtTime(activeTimer.target - activeTimer.elapsed);
-      }
-    }, 1000);
+    activeTimer = { itemId: itemId, startedAt: Date.now(), target: item.minutes * 60, overtime: false, sessionIndex: null, intervalId: null };
+    persistFocus();
+    activeTimer.intervalId = setInterval(tick, 1000);
     renderAll();
   }
   function stopTimer(rerender) {
     if (activeTimer && activeTimer.intervalId) clearInterval(activeTimer.intervalId);
     activeTimer = null;
+    if (state) { delete state.activeFocus; save(); }
     if (rerender) renderAll();
   }
-  // 正计时结束：把本次总时长写进该条专注记录，然后停表
+  // 正计时结束：把本次总时长写进该条专注记录，然后停表。
+  // 按 sessionDay 找记录并核对 itemId，避免跨午夜写到另一条记录头上。
   function endFocus() {
     if (activeTimer && activeTimer.overtime && activeTimer.sessionIndex != null) {
-      var rec = ensureDay(todayKey());
-      if (rec.sessions && rec.sessions[activeTimer.sessionIndex]) {
-        rec.sessions[activeTimer.sessionIndex].seconds = activeTimer.elapsed;
+      var rec = state.days[activeTimer.sessionDay || todayKey()];
+      if (rec && rec.sessions && rec.sessions[activeTimer.sessionIndex] &&
+          rec.sessions[activeTimer.sessionIndex].itemId === activeTimer.itemId) {
+        rec.sessions[activeTimer.sessionIndex].seconds = timerElapsed();
         save();
       }
     }
     stopTimer(true);
   }
-  // 撤销时若该项正在正计时，丢弃本次未结束的记录
+  // 恢复进行中的专注（重进页面时）：只恢复今天的；隔夜残留直接丢弃，不自动补记。
+  function restoreFocus() {
+    var f = state.activeFocus;
+    if (!f) return;
+    var item = state.items.filter(function (it) { return it.id === f.itemId; })[0];
+    if (!item || localKey(new Date(f.startedAt)) !== todayKey() || f.startedAt > Date.now()) {
+      delete state.activeFocus; save(); return;
+    }
+    activeTimer = { itemId: f.itemId, startedAt: f.startedAt, target: f.target, overtime: !!f.overtime, sessionIndex: f.sessionIndex != null ? f.sessionIndex : null, sessionDay: f.sessionDay || null, intervalId: null };
+    // 熄屏期间已跑满：恢复瞬间即结算，不用再等一轮
+    if (!activeTimer.overtime && timerElapsed() >= activeTimer.target) {
+      completeFocus();
+    }
+    if (activeTimer) activeTimer.intervalId = setInterval(tick, 1000);
+  }
+  // 撤销时若该项正在正计时，丢弃本次未结束的记录（同样按 sessionDay + itemId 核对）
   function discardActiveSession(itemId) {
     if (activeTimer && activeTimer.itemId === itemId && activeTimer.sessionIndex != null) {
-      var rec = ensureDay(todayKey());
-      if (rec.sessions && rec.sessions[activeTimer.sessionIndex] &&
+      var rec = state.days[activeTimer.sessionDay || todayKey()];
+      if (rec && rec.sessions && rec.sessions[activeTimer.sessionIndex] &&
           rec.sessions[activeTimer.sessionIndex].itemId === itemId) {
         rec.sessions.splice(activeTimer.sessionIndex, 1);
         save();
@@ -252,7 +303,7 @@
       if (isTiming && !activeTimer.overtime) {
         var timer = document.createElement('span');
         timer.className = 'timer'; timer.id = 'timer-' + item.id;
-        timer.textContent = fmtTime(activeTimer.target - activeTimer.elapsed);
+        timer.textContent = fmtTime(Math.max(0, activeTimer.target - timerElapsed()));
         actions.appendChild(timer);
         var cancel = document.createElement('button');
         cancel.type = 'button'; cancel.className = 'secondary'; cancel.textContent = '取消计时';
@@ -266,7 +317,7 @@
         if (activeTimer && activeTimer.overtime && activeTimer.itemId === item.id) {
           var over = document.createElement('span');
           over.className = 'timer'; over.id = 'timer-' + item.id;
-          over.textContent = '已专注 ' + fmtTime(activeTimer.elapsed);
+          over.textContent = '已专注 ' + fmtTime(timerElapsed());
           actions.appendChild(over);
           var end = document.createElement('button');
           end.type = 'button'; end.textContent = '结束';
@@ -323,6 +374,13 @@
         var ta = document.createElement('textarea');
         ta.rows = 2; ta.placeholder = '写一笔，比如副业想到的点子……';
         ta.value = note;
+        // 同款熄屏丢数据问题：每敲一个字就存；change 只负责收起编辑框。
+        ta.oninput = function () {
+          var r = ensureDay(today);
+          if (ta.value.trim()) r.notes[item.id] = ta.value;
+          else delete r.notes[item.id];
+          save();
+        };
         ta.onchange = function () {
           var r = ensureDay(today);
           if (ta.value.trim()) r.notes[item.id] = ta.value;
@@ -430,6 +488,12 @@
         var v = nameInput.value.trim();
         if (v) { item.name = v; save(); renderAll(); } else { nameInput.value = item.name; }
       };
+      // 同款熄屏丢数据问题：改名只靠 change 保存，改一半熄屏就丢。
+      // oninput 只存不重绘（重绘会把正在打字的输入框换掉、丢焦点）。
+      nameInput.oninput = function () {
+        var v = nameInput.value.trim();
+        if (v) { item.name = v; save(); }
+      };
       var minInput = document.createElement('input');
       minInput.type = 'number'; minInput.min = 1; minInput.max = 120; minInput.value = item.minutes;
       minInput.setAttribute('aria-label', '目标分钟数');
@@ -439,6 +503,13 @@
         if (v > 120) v = 120;
         item.minutes = v; minInput.value = v;
         save(); renderAll();
+      };
+      minInput.oninput = function () {
+        var v = parseInt(minInput.value, 10);
+        if (isNaN(v)) return;
+        if (v < 1) v = 1;
+        if (v > 120) v = 120;
+        item.minutes = v; save();
       };
       var up = document.createElement('button');
       up.type = 'button'; up.className = 'secondary'; up.textContent = '↑';
@@ -463,12 +534,14 @@
       del.onclick = function () {
         if (!window.confirm('确定删除“' + item.name + '”吗？今天的打卡记录会同步去掉它，过去的日子不受影响。')) return;
         state.items.splice(idx, 1);
-        // 仅清理今天的记录，历史原样保留
+        // 仅清理今天的记录，历史原样保留；同时同步今天的总项目数，
+        // 否则明天这天会因 total 滞后（旧 5 项 vs 新 4 项）丢掉完美、断掉连续。
         var t = state.days[todayKey()];
         if (t) {
           var i = t.done.indexOf(item.id);
           if (i !== -1) t.done.splice(i, 1);
           if (t.notes) delete t.notes[item.id];
+          t.total = state.items.length;
         }
         if (activeTimer && activeTimer.itemId === item.id) stopTimer(false);
         save(); renderAll();
@@ -556,6 +629,59 @@
     }
   }
 
+  // ---------- 全部数据备份：导出 JSON 文件 / 从文件导入 ----------
+  // 导出的是全部数据（打卡、专注记录、鼓励句、项目设置）；换手机时导入就回来了。
+  // 备份文件由用户自己保管（文件 App / 微信），不经过任何服务器。
+  function buildBackupJSON() {
+    return JSON.stringify({ app: 'perfect-day', version: 1, exportedAt: new Date().toISOString(), state: state }, null, 2);
+  }
+  function backupHint(msg) {
+    var hint = el('backupHint');
+    if (!hint) return;
+    hint.textContent = msg;
+    hint.hidden = false;
+    setTimeout(function () { hint.hidden = true; }, 3000);
+  }
+  function downloadBackup() {
+    try {
+      var blob = new Blob([buildBackupJSON()], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'perfect-day-backup-' + todayKey() + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      backupHint('✓ 备份已生成，存到文件 App 或微信里');
+    } catch (e) {
+      backupHint('导出失败，换个浏览器再试一次');
+    }
+  }
+  function importBackupFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var json = JSON.parse(reader.result);
+        var s = (json && json.state) ? json.state : json;
+        if (!s || !Array.isArray(s.items) || !s.days) { backupHint('这个文件不是有效的备份'); return; }
+        if (!window.confirm('导入会覆盖当前这台手机上的全部数据，确定继续吗？')) return;
+        if (activeTimer) stopTimer(false);
+        state = s;
+        if (!state.encouragement) state.encouragement = {};
+        delete state.activeFocus; // 不把别人手机上的进行中专注带到这台手机
+        save();
+        renderEncourage();
+        renderAll();
+        backupHint('✓ 已导入，数据回来了');
+      } catch (e) {
+        backupHint('这个文件不是有效的备份');
+      }
+    };
+    reader.onerror = function () { backupHint('读取文件失败，再试一次'); };
+    reader.readAsText(file);
+  }
+
   function renderAll() {
     renderHero();
     renderToday();
@@ -565,6 +691,13 @@
 
   function init() {
     state = load();
+    restoreFocus(); // 熄屏/被系统回收后重进，正在进行的专注按墙钟恢复
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      // 亮屏/切回前台瞬间立即按墙钟结算一次，不等下一秒的 interval
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) tick();
+      });
+    }
     var label = el('todayLabel');
     label.textContent = new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' });
     el('addBtn').onclick = function () {
@@ -576,8 +709,26 @@
       state.items.push({ id: 'it' + Date.now(), name: name, minutes: mins });
       el('newName').value = '';
       el('newMinutes').value = '5';
+      try { window.localStorage.removeItem('perfect-day-draft'); } catch (e) {}
       save(); renderAll();
     };
+    // 新增输入框的草稿也即时存：填一半熄屏/重进，草稿还在。
+    (function () {
+      var dn = el('newName'), dm = el('newMinutes');
+      if (!dn || !dm) return;
+      try {
+        var draft = JSON.parse(window.localStorage.getItem('perfect-day-draft') || 'null');
+        if (draft) {
+          if (draft.name) dn.value = draft.name;
+          if (draft.minutes) dm.value = draft.minutes;
+        }
+      } catch (e) {}
+      var saveDraft = function () {
+        try { window.localStorage.setItem('perfect-day-draft', JSON.stringify({ name: dn.value, minutes: dm.value })); } catch (e) {}
+      };
+      dn.oninput = saveDraft;
+      dm.oninput = saveDraft;
+    })();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(function () {});
     }
@@ -586,21 +737,38 @@
     var encSaved = el('encourageSaved');
     var encTimer = null;
     if (encInput) {
-      encInput.onchange = function () {
+      // 熄屏同款问题：只靠 change（失焦/回车）保存，输入一半就熄屏会丢。
+      // 改成每敲一个字就存，change 只作兜底。
+      var saveEnc = function () {
         if (!state.encouragement) state.encouragement = {};
         var v = encInput.value.trim();
         if (v) state.encouragement[todayKey()] = v;
         else delete state.encouragement[todayKey()];
         save();
+      };
+      encInput.oninput = function () {
+        saveEnc();
         if (encSaved) {
           encSaved.hidden = false;
           if (encTimer) clearTimeout(encTimer);
           encTimer = setTimeout(function () { encSaved.hidden = true; }, 1500);
         }
       };
+      encInput.onchange = saveEnc;
     }
     var copyBtn = el('copyFocusBtn');
     if (copyBtn) copyBtn.onclick = copyFocusData;
+    var exportBtn = el('exportBackupBtn');
+    if (exportBtn) exportBtn.onclick = downloadBackup;
+    var importBtn = el('importBackupBtn');
+    var importFile = el('importBackupFile');
+    if (importBtn && importFile) {
+      importBtn.onclick = function () { importFile.click(); };
+      importFile.onchange = function () {
+        if (importFile.files && importFile.files[0]) importBackupFile(importFile.files[0]);
+        importFile.value = '';
+      };
+    }
     renderAll();
   }
 
